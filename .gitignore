@@ -10,6 +10,9 @@ __pycache__/
 venv/
 env/
 
+# 임시 작업 및 테스트용 폴더
+scratch/
+
 # 개인 대화 히스토리 데이터 (개인정보 및 보안)
 chat_history.json
 
