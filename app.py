@@ -1,6 +1,5 @@
 import streamlit as st
 import os
-import json
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -17,14 +16,6 @@ load_dotenv()
 from utils import load_all_history, save_current_history
 from news_agent import collect_news, filter_news
 from ai_agent import analyze_sentiments, analyze_risks, generate_briefing, run_direct_gemini_chat, GEMINI_MODEL
-
-# Google GenerativeAI 라이브러리가 제대로 임포트되는지 확인 (UI 경고 알림용)
-try:
-    import google.generativeai as genai
-    HAS_GENAI = True
-except Exception as e:
-    HAS_GENAI = False
-    print("Google GenAI SDK 임포트 실패:", e)
 
 # --- Streamlit 세션 상태(Session State) 변수 초기화 ---
 if "chat_history" not in st.session_state:
@@ -46,9 +37,42 @@ st.set_page_config(page_title="Stock-Agent: AI 투자 뉴스 비서", page_icon=
 # 세련된 네이버 금융 스타일로 변경하기 위한 CSS 인젝션
 st.markdown("""
     <style>
-    header[data-testid="stHeader"] {
-        visibility: hidden;
-        height: 0px;
+    .stAppDeployButton,
+    button[id="MainMenu"] {
+        display: none !important;
+    }
+    /* 인기 종목 빠른 검색 버튼 스타일 커스텀 (조약돌 디자인) */
+    div[data-testid="column"] div.stButton {
+        height: 38px !important;
+        min-height: 38px !important;
+        max-height: 38px !important;
+        margin: 0 0 8px 0 !important;
+        padding: 0 !important;
+    }
+    div[data-testid="column"] button {
+        background-color: #F1F3F4 !important;
+        color: #1E1E23 !important;
+        border: 1px solid #E4E8EB !important;
+        border-radius: 20px !important;
+        padding: 0.4rem 1rem !important;
+        font-size: 0.86rem !important;
+        font-weight: 700 !important;
+        box-shadow: none !important;
+        width: 100% !important;
+        height: 38px !important;
+        min-height: 38px !important;
+        max-height: 38px !important;
+        white-space: nowrap !important;
+        overflow: hidden !important;
+        transition: all 0.2s ease !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+    }
+    div[data-testid="column"] button:hover {
+        background-color: #03C75A !important;
+        color: #FFFFFF !important;
+        border-color: #03C75A !important;
     }
     div[data-testid="stDecorator"] {
         display: none;
@@ -159,6 +183,7 @@ st.markdown("""
         line-height: 1.5 !important;
         font-weight: 500 !important;
     }
+
     textarea[data-testid="stChatInputTextArea"]:focus {
         border-color: #03C75A !important;
         box-shadow: 0 0 0 1px #03C75A !important;
@@ -242,84 +267,111 @@ else:
 if not st.session_state["current_stock"]:
     st.subheader("🔍 주식 종목 분석 시작")
     stock_input = st.text_input("분석할 주식 종목명을 입력하세요", placeholder="예: 삼성전자, 테슬라, SK하이닉스")
+    
+    # 실시간 인기 종목 빠른 검색 영역 추가 (3개씩 2줄 배치로 넓은 폭 확보)
+    st.markdown("<div style='margin-top: 1rem; margin-bottom: 0.5rem; font-weight: 700; color: #1E1E23; font-size: 0.95rem;'>🔥 실시간 인기 종목 빠른 검색</div>", unsafe_allow_html=True)
+    popular_stocks_1 = ["삼성전자", "SK하이닉스", "테슬라"]
+    popular_stocks_2 = ["엔비디아", "애플", "에코프로"]
+    
+    cols1 = st.columns(3)
+    clicked_stock = None
+    for i, stock in enumerate(popular_stocks_1):
+        if cols1[i].button(stock, key=f"pop_{stock}", use_container_width=True):
+            clicked_stock = stock
+            
+    cols2 = st.columns(3)
+    for i, stock in enumerate(popular_stocks_2):
+        if cols2[i].button(stock, key=f"pop_{stock}", use_container_width=True):
+            clicked_stock = stock
+            
+    st.markdown("<div style='margin-bottom: 1.5rem;'></div>", unsafe_allow_html=True)
     start_btn = st.button("뉴스 분석 시작", use_container_width=True)
+    
+    # 분석 시작 트리거 판정
+    target_stock = ""
+    should_start = False
     
     if start_btn:
         if not stock_input.strip():
             st.warning("분석할 종목명을 기입해 주세요.")
-        elif not active_google_key or not active_naver_id or not active_naver_secret:
-            st.error("🔑 API Key 설정이 비어있습니다. 프로젝트 내의 `.env` 파일에 API 키를 등록해 주세요.")
         else:
-            st.session_state["current_stock"] = stock_input.strip()
-            st.session_state["session_id"] = datetime.now().strftime("%Y%m%d_%H%M%S")
-            try:
-                status_container = st.status("AI 주식 분석 진행 중...", expanded=True)
-                with status_container as status:
-                    # 1단계: 뉴스 수집 (news_agent 모듈 호출)
-                    status.write("1단계: 관련 뉴스 수집 중... (10건)")
-                    collected = collect_news(stock_input)
-                    if not collected:
-                        status.update(label="뉴스 수집 실패! API 설정을 확인하세요.", state="error")
-                        st.session_state["current_stock"] = ""
-                        st.session_state["session_id"] = ""
-                        st.stop()
-                    status.write(f"1단계 완료! ✅ ({len(collected)}건 수집됨)")
-                    
-                    # 2단계: 필터링 (news_agent 모듈 호출)
-                    status.write("2단계: 중복 및 저품질 뉴스 필터링 중...")
-                    filtered = filter_news(collected)
-                    if not filtered:
-                        status.update(label="필터링 결과 분석할 유효한 뉴스가 없습니다.", state="error")
-                        st.session_state["current_stock"] = ""
-                        st.session_state["session_id"] = ""
-                        st.stop()
-                    status.write(f"2단계 완료! ✅ ({len(filtered)}건 남음)")
-                    
-                    # 3단계: 감성 분석 (ai_agent 모듈 호출)
-                    status.write("3단계: Gemini로 개별 뉴스 호재/악재 감성 분석 중...")
-                    analyzed = analyze_sentiments(filtered, active_google_key)
-                    status.write("3단계 완료! ✅")
-                    
-                    # 4단계: 리스크 분석 (ai_agent 모듈 호출)
-                    status.write("4단계: 투자 유의 리스크 요인 분석 중...")
-                    risks = analyze_risks(analyzed, active_google_key)
-                    status.write(f"4단계 완료! ✅ ({len(risks)}개 리스크 감지)")
-                    
-                    # 5단계: 브리핑 생성 (ai_agent 모듈 호출)
-                    status.write("5단계: 주식 분석 리포트 및 브리핑 생성 중...")
-                    briefing = generate_briefing(analyzed, risks, stock_input, active_google_key)
-                    status.write("5단계 완료! ✅ (금융 심의 필터 적용)")
-                    
-                    status.update(label="AI 분석 성공적으로 완료! 🎉", state="complete", expanded=False)
+            target_stock = stock_input.strip()
+            should_start = True
+    elif clicked_stock:
+        target_stock = clicked_stock
+        should_start = True
+        
+    if should_start:
+        st.session_state["current_stock"] = target_stock
+        st.session_state["session_id"] = datetime.now().strftime("%Y%m%d_%H%M%S")
+        try:
+            status_container = st.status("AI 주식 분석 진행 중...", expanded=True)
+            with status_container as status:
+                # 1단계: 뉴스 수집 (news_agent 모듈 호출)
+                status.write(f"1단계: '{target_stock}' 관련 뉴스 수집 중... (10건)")
+                collected = collect_news(target_stock)
+                if not collected:
+                    status.update(label="뉴스 수집 실패! API 설정을 확인하세요.", state="error")
+                    st.session_state["current_stock"] = ""
+                    st.session_state["session_id"] = ""
+                    st.stop()
+                status.write(f"1단계 완료! ✅ ({len(collected)}건 수집됨)")
                 
-                # 결과 상태 저장
-                st.session_state["news_context_raw"] = analyzed
-                st.session_state["risks"] = risks
+                # 2단계: 필터링 (news_agent 모듈 호출)
+                status.write("2단계: 중복 및 저품질 뉴스 필터링 중...")
+                filtered = filter_news(collected)
+                if not filtered:
+                    status.update(label="필터링 결과 분석할 유효한 뉴스가 없습니다.", state="error")
+                    st.session_state["current_stock"] = ""
+                    st.session_state["session_id"] = ""
+                    st.stop()
+                status.write(f"2단계 완료! ✅ ({len(filtered)}건 남음)")
                 
-                # 컨텍스트 조립
-                news_summary_text = []
-                for i, news in enumerate(analyzed, 1):
-                    news_summary_text.append(f"[{i}] {news['title']}\n- 감성: {news['sentiment']}\n- 근거: {news['reason']}\n- 링크: {news['link']}")
-                st.session_state["news_context"] = "\n\n".join(news_summary_text)
+                # 3단계: 감성 분석 (ai_agent 모듈 호출)
+                status.write("3단계: Gemini로 개별 뉴스 호재/악재 감성 분석 중...")
+                analyzed = analyze_sentiments(filtered, active_google_key)
+                status.write("3단계 완료! ✅")
                 
-                # 대화 히스토리에 분석 시작 및 결과 추가
-                st.session_state["chat_history"].append({"role": "user", "content": f"**{stock_input}** 주식 뉴스 분석 시작"})
-                st.session_state["chat_history"].append({"role": "assistant", "content": briefing})
+                # 4단계: 리스크 분석 (ai_agent 모듈 호출)
+                status.write("4단계: 투자 유의 리스크 요인 분석 중...")
+                risks = analyze_risks(analyzed, active_google_key)
+                status.write(f"4단계 완료! ✅ ({len(risks)}개 리스크 감지)")
                 
-                # 히스토리 파일에 영구 저장 (utils 모듈 호출)
-                save_current_history(
-                    st.session_state["session_id"],
-                    st.session_state["current_stock"],
-                    st.session_state["news_context"],
-                    st.session_state["chat_history"],
-                    news_context_raw=st.session_state["news_context_raw"],
-                    risks=st.session_state["risks"]
-                )
-                st.rerun()
-            except Exception as e:
-                st.session_state["current_stock"] = ""
-                st.session_state["session_id"] = ""
-                st.error(f"분석 중 오류 발생: {str(e)}")
+                # 5단계: 브리핑 생성 (ai_agent 모듈 호출)
+                status.write("5단계: 주식 분석 리포트 및 브리핑 생성 중...")
+                briefing = generate_briefing(analyzed, risks, target_stock, active_google_key)
+                status.write("5단계 완료! ✅ (금융 심의 필터 적용)")
+                
+                status.update(label="AI 분석 성공적으로 완료! 🎉", state="complete", expanded=False)
+            
+            # 결과 상태 저장
+            st.session_state["news_context_raw"] = analyzed
+            st.session_state["risks"] = risks
+            
+            # 컨텍스트 조립
+            news_summary_text = []
+            for i, news in enumerate(analyzed, 1):
+                news_summary_text.append(f"[{i}] {news['title']}\n- 감성: {news['sentiment']}\n- 근거: {news['reason']}\n- 링크: {news['link']}")
+            st.session_state["news_context"] = "\n\n".join(news_summary_text)
+            
+            # 대화 히스토리에 분석 시작 및 결과 추가
+            st.session_state["chat_history"].append({"role": "user", "content": f"**{target_stock}** 주식 뉴스 분석 시작"})
+            st.session_state["chat_history"].append({"role": "assistant", "content": briefing})
+            
+            # 히스토리 파일에 영구 저장 (utils 모듈 호출)
+            save_current_history(
+                st.session_state["session_id"],
+                st.session_state["current_stock"],
+                st.session_state["news_context"],
+                st.session_state["chat_history"],
+                news_context_raw=st.session_state["news_context_raw"],
+                risks=st.session_state["risks"]
+            )
+            st.rerun()
+        except Exception as e:
+            st.session_state["current_stock"] = ""
+            st.session_state["session_id"] = ""
+            st.error(f"분석 중 오류 발생: {str(e)}")
 
 else:
     st.markdown(f"### 💬 **{st.session_state['current_stock']}** 분석 및 대화방")
@@ -410,16 +462,12 @@ else:
         
         with st.spinner("생각 중..."):
             try:
-                if not HAS_GENAI:
-                    st.error("google-generativeai 패키지가 로드되지 않아 후속 질문을 처리할 수 없습니다.")
-                    response = "오류: google-generativeai 로드 실패"
-                else:
-                    # ai_agent 모듈의 대화 답변 함수 호출
-                    response = run_direct_gemini_chat(
-                        user_question=user_input,
-                        active_google_key=active_google_key,
-                        model_name=GEMINI_MODEL
-                    )
+                # ai_agent 모듈의 대화 답변 함수 호출
+                response = run_direct_gemini_chat(
+                    user_question=user_input,
+                    active_google_key=active_google_key,
+                    model_name=GEMINI_MODEL
+                )
                 st.session_state["chat_history"].append({"role": "assistant", "content": response})
                 # 세션 히스토리 저장 (utils 모듈 호출)
                 save_current_history(

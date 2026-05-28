@@ -57,12 +57,4 @@ def clean_html(text: str) -> str:
     cleaned_text = re.sub(clean_re, '', text)
     return html.unescape(cleaned_text)
 
-def get_jaccard_similarity(str1: str, str2: str) -> float:
-    """
-    두 문자열 간의 자카드 유사도(Jaccard Similarity)를 계산합니다. (중복도 판단용)
-    """
-    s1 = set(str1)
-    s2 = set(str2)
-    if not s1 and not s2:
-        return 1.0
-    return len(s1.intersection(s2)) / len(s1.union(s2))
+
